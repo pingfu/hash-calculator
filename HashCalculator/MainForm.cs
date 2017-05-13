@@ -23,6 +23,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace HashCalculator
@@ -36,14 +38,7 @@ namespace HashCalculator
             DragOver += OnDragOver;
             DragDrop += OnDragDrop;
         }
-
-	    protected override void OnLoad(EventArgs e)
-		{
-			base.OnLoad(e);
-
-			Check();
-		}
-
+        
 		private void CmdCompute_Click(object sender, EventArgs e)
 		{
 			Check();
@@ -105,7 +100,7 @@ namespace HashCalculator
             }
         }
 
-        private void OnDragOver(object sender, DragEventArgs dragEventArgs)
+        private static void OnDragOver(object sender, DragEventArgs dragEventArgs)
         {
             if (dragEventArgs.Data.GetDataPresent(DataFormats.FileDrop))
             {
@@ -123,15 +118,18 @@ namespace HashCalculator
 
 		public void ColorTextBox(TextBox c)
 		{
-			int lc = 246;
-			int mc = 160;
-			int hc = 255;
-			if ((TxtCheck.Text.Trim() == "") || (c.Text == ""))
-				c.BackColor = Color.FromArgb(lc, lc, lc);
-			else if (TxtCheck.Text.Trim() == c.Text)
-				c.BackColor = Color.FromArgb(mc, hc, mc);
-			else
-				c.BackColor = Color.FromArgb(hc, mc, mc);
+		    c.Invoke(() =>
+            {
+                int lc = 246;
+                int mc = 160;
+                int hc = 255;
+                if ((TxtCheck.Text.Trim() == "") || (c.Text == ""))
+                    c.BackColor = Color.FromArgb(lc, lc, lc);
+                else if (TxtCheck.Text.Trim() == c.Text)
+                    c.BackColor = Color.FromArgb(mc, hc, mc);
+                else
+                    c.BackColor = Color.FromArgb(hc, mc, mc);
+            });
 		}
 
 		private static string GetHash(string filePath, HashAlgorithm hasher)
@@ -145,61 +143,221 @@ namespace HashCalculator
 			var hash = hasher.ComputeHash(s);
 			return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();			
 		}
+        
+        public Task<HashChecksum> Compute(string filename, CheckBox c, TextBox t, HashAlgorithm hashAlgorithm)
+        {
+            if (c.Checked == false || _cancellationTokenSource.IsCancellationRequested)
+            {
+                return new Task<HashChecksum>(() => null);
+            }
 
-		public void Compute(CheckBox c, TextBox t, string a)
+		    return Task.Run(() =>
+            {
+                try
+                {
+                    using (var lhc = new LargeHashCollider(hashAlgorithm))
+                    {
+                        this.Invoke(() =>
+                        {
+                            t.Text = "Calculation...";
+                        });
+
+                        //var result = new HashChecksum("");
+                        var result = lhc.ComputeOn(new FileInfo(filename), _cancellationTokenSource.Token, HashProgress);
+
+                        this.Invoke(() =>
+                        {
+                            Text = $"File Hash Calculator";
+
+                            t.BackColor = Color.LightYellow;
+                            t.Text = result.ToString();
+
+                            ColorTextBox(t);
+
+                            t.Refresh();
+                        });
+
+                        return result;
+                    }
+                }
+                catch (Exception e)
+                {
+                    this.Invoke(() =>
+                    {
+                        Text = $"File Hash Calculator";
+                        t.Text = string.Empty;
+                    });
+
+                    return null;
+                }
+            });
+        }
+
+        private void HashProgress(HashProgressEventArgs e)
+        {
+            this.Invoke(() =>
+            {
+                Text = $"File Hash Calculator — processing {e.BytesRead}/{e.FileSize} ({e.ProgressPercentage}%)";
+            });
+        }
+
+        public async void Check()
 		{
-			if (c.Checked)
-			{
-				if ((t.Text == "") && (TxtPath.Text != ""))
-				{
-					HashAlgorithm algo = null;
-					if (a == "md5")
-						algo = new MD5CryptoServiceProvider();
-					else if (a == "sha1")
-						algo = new SHA1CryptoServiceProvider();
-					else if (a == "sha256")
-						algo = new SHA256CryptoServiceProvider();
-					else if (a == "sha512")
-						algo = new SHA512CryptoServiceProvider();
-
-					if (algo != null)
-					{
-						try
-						{
-							t.BackColor = Color.LightYellow;
-							t.Text = "Calculation...";							
-							t.Text = GetHash(TxtPath.Text, algo);							
-						}
-						catch (Exception e)
-						{
-							t.Text = e.Message;
-						}
-						t.Refresh();
-					}
-					else
-						t.Text = "Unknown algorithm.";
-				}
-			}
-			else
-			{
-				t.Text = "";
-			}
-						
-			ColorTextBox(t);
-			t.Refresh();
-
-			Application.DoEvents();
-		}
-
-		public void Check()
-		{
 			Application.DoEvents();
 
-			Compute(ChkMD5, TxtMD5, "md5");
-			Compute(ChkSHA1, TxtSHA1, "sha1");
-			Compute(ChkSHA256, TxtSHA256, "sha256");
-			Compute(ChkSHA512, TxtSHA512, "sha512");
-		}
+            Cursor.Current = Cursors.WaitCursor;
 
-	}
+		    var filename = TxtPath.Text;
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            await Compute(filename, ChkMD5, TxtMD5, MD5.Create());
+            await Compute(filename, ChkSHA1, TxtSHA1, SHA1.Create());
+            await Compute(filename, ChkSHA256, TxtSHA256, SHA256.Create());
+            await Compute(filename, ChkSHA512, TxtSHA512, SHA512.Create());
+
+            Cursor.Current = Cursors.Default;
+        }
+
+        private volatile CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
+
+        private sealed class LargeHashCollider : IDisposable
+        {
+            private const int BufferSize = 65536;
+            private readonly HashAlgorithm _hashAlgorithm;
+
+            public LargeHashCollider(HashAlgorithm hashAlgorithm)
+            {
+                if (hashAlgorithm == null)
+                {
+                    hashAlgorithm = SHA256.Create();
+                }
+
+                _hashAlgorithm = hashAlgorithm;
+            }
+
+            public HashChecksum ComputeOn(FileSystemInfo fileInfo, CancellationToken cancellationToken, Action<HashProgressEventArgs> hashProgress = null)
+            {
+                using (var stream = File.Open(fileInfo.FullName, FileMode.Open))
+                {
+                    var totalBytesRead = 0L;
+                    var readAheadBuffer = new byte[BufferSize];
+                    var readAheadBytesRead = stream.Read(readAheadBuffer, 0, readAheadBuffer.Length);
+
+                    totalBytesRead += readAheadBytesRead;
+
+                    do
+                    {
+                        var bytesRead = readAheadBytesRead;
+                        var buffer = readAheadBuffer;
+
+                        readAheadBuffer = new byte[BufferSize];
+                        readAheadBytesRead = stream.Read(readAheadBuffer, 0, readAheadBuffer.Length);
+
+                        totalBytesRead += readAheadBytesRead;
+
+                        if (readAheadBytesRead == 0)
+                        {
+                            _hashAlgorithm.TransformFinalBlock(buffer, 0, bytesRead);
+                        }
+                        else
+                        {
+                            _hashAlgorithm.TransformBlock(buffer, 0, bytesRead, buffer, 0);
+                        }
+
+                        hashProgress?.Invoke(new HashProgressEventArgs(totalBytesRead, stream.Length));
+
+                    } while (readAheadBytesRead != 0 && !cancellationToken.IsCancellationRequested);
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        throw new OperationCanceledException("Cancellation requested.");
+                    }
+
+                    return new HashChecksum(_hashAlgorithm.Hash);
+                }
+            }
+
+            public void Dispose()
+            {
+                _hashAlgorithm?.Dispose();
+            }
+        }
+
+        private void MainForm_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Escape)
+            {
+                if (_cancellationTokenSource.IsCancellationRequested == false)
+                {
+                    _cancellationTokenSource.Cancel();
+                }
+
+                // prevent child controls from handling this event as well
+                e.SuppressKeyPress = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Convenience class to hold and compare the outputs from hashing functions
+    /// </summary>
+    public sealed class HashChecksum
+    {
+        public byte[] Hash { get; }
+
+        public HashChecksum(byte[] hash)
+        {
+            Hash = hash;
+        }
+
+        public HashChecksum(string hexidecimal)
+        {
+            try
+            {
+                Hash =
+                    Enumerable.Range(0, hexidecimal.Length)
+                        .Where(x => x % 2 == 0)
+                        .Select(x => Convert.ToByte(hexidecimal.Substring(x, 2), 16))
+                        .ToArray();
+            }
+            catch (Exception e)
+            {
+                throw new Exception($"Could not parse the input string as hexadecimal: {e.Message}");
+            }
+        }
+
+        public override string ToString()
+        {
+            return BitConverter.ToString(Hash).ToLower().Replace("-", "");
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (ReferenceEquals(null, obj)) return false;
+            if (ReferenceEquals(this, obj)) return true;
+
+            var otherHash = obj as HashChecksum;
+            return otherHash != null && otherHash.Hash.SequenceEqual(Hash);
+        }
+
+        public override int GetHashCode()
+        {
+            return Hash?.GetHashCode() ?? 0;
+        }
+    }
+
+    public sealed class HashProgressEventArgs
+    {
+        public long BytesRead { get; }
+        public long FileSize { get; }
+
+        public double ProgressPercentage => Convert.ToInt32((double)BytesRead / FileSize * 100); // at least one value needs to be as casted a Double to divide two Int64 values
+
+        public HashProgressEventArgs(long totalBytesRead, long size)
+        {
+            BytesRead = totalBytesRead;
+            FileSize = size;
+        }
+    }
 }
