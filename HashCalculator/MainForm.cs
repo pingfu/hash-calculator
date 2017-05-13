@@ -22,6 +22,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Diagnostics;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace HashCalculator
@@ -31,9 +32,12 @@ namespace HashCalculator
 		public MainForm()
 		{
 			InitializeComponent();
-		}
+            
+            DragOver += OnDragOver;
+            DragDrop += OnDragDrop;
+        }
 
-		protected override void OnLoad(EventArgs e)
+	    protected override void OnLoad(EventArgs e)
 		{
 			base.OnLoad(e);
 
@@ -70,8 +74,7 @@ namespace HashCalculator
 		{
 			Check();
 		}
-
-
+        
 		private void ChkMD5_CheckedChanged(object sender, EventArgs e)
 		{
 			Check();
@@ -92,7 +95,25 @@ namespace HashCalculator
 			Check();
 		}
 
-		public void Clear()
+        private void OnDragDrop(object sender, DragEventArgs dragEventArgs)
+        {
+            if (dragEventArgs.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                var strFiles = (string[])dragEventArgs.Data.GetData(DataFormats.FileDrop);
+                TxtPath.Text = strFiles.First();
+                Check();
+            }
+        }
+
+        private void OnDragOver(object sender, DragEventArgs dragEventArgs)
+        {
+            if (dragEventArgs.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                dragEventArgs.Effect = DragDropEffects.Copy;
+            }
+        }
+
+        public void Clear()
 		{
 			TxtMD5.Text = "";
 			TxtSHA1.Text = "";
